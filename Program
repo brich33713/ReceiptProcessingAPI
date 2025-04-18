@@ -1,0 +1,144 @@
+using Microsoft.AspNetCore.Mvc;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+app.MapControllers();
+
+app.Run();
+
+// Models
+public class Receipt
+{
+    public string Retailer { get; set; }
+    public string PurchaseDate { get; set; }
+    public string PurchaseTime { get; set; }
+    public List<ReceiptItem> Items { get; set; }
+    public string Total { get; set; }
+}
+
+public class ReceiptItem
+{
+    public string ShortDescription { get; set; }
+    public string Price { get; set; }
+}
+
+public class ProcessReceiptResponse
+{
+    public string Id { get; set; }
+}
+
+public class PointsResponse
+{
+    public int Points { get; set; }
+}
+
+// In-memory Data Store
+public static class InMemoryDataStore
+{
+    public static Dictionary<string, int> Receipts = new Dictionary<string, int>();
+}
+
+// Points Calculation Logic
+public static class PointsCalculator
+{
+    public static int CalculatePoints(Receipt receipt)
+    {
+        int points = 0;
+
+        // 1 point for every alphanumeric character in the retailer name
+        points += receipt.Retailer.Count(c => char.IsLetterOrDigit(c));
+
+        // 50 points if the total is a round dollar amount with no cents
+        if (decimal.TryParse(receipt.Total, out decimal totalAmount) && totalAmount == Math.Floor(totalAmount))
+        {
+            points += 50;
+        }
+
+        // 25 points if the total is a multiple of 0.25
+        if (decimal.TryParse(receipt.Total, out decimal total) && total % 0.25m == 0)
+        {
+            points += 25;
+        }
+
+        // 5 points for every two items
+        points += (receipt.Items.Count / 2) * 5;
+
+        // If the trimmed length of the item description is a multiple of 3, calculate points based on price
+        foreach (var item in receipt.Items)
+        {
+            var trimmedDescriptionLength = item.ShortDescription.Trim().Length;
+            if (trimmedDescriptionLength % 3 == 0)
+            {
+                var price = decimal.Parse(item.Price);
+                var itemPoints = (int)Math.Ceiling(price * 0.2m);
+                points += itemPoints;
+            }
+        }
+
+        // 5 points if the total is greater than 10.00
+        if (totalAmount > 10.00m)
+        {
+            points += 5;
+        }
+
+        // 6 points if the day in the purchase date is odd
+        if (DateTime.TryParse(receipt.PurchaseDate, out DateTime purchaseDate) && purchaseDate.Day % 2 != 0)
+        {
+            points += 6;
+        }
+
+        // 10 points if the time of purchase is between 2:00pm and 4:00pm
+        if (TimeSpan.TryParse(receipt.PurchaseTime, out TimeSpan purchaseTime))
+        {
+            if (purchaseTime >= TimeSpan.FromHours(14) && purchaseTime <= TimeSpan.FromHours(16))
+            {
+                points += 10;
+            }
+        }
+
+        return points;
+    }
+}
+
+// Controllers
+[ApiController]
+[Route("api/[controller]")]
+public class ReceiptController : ControllerBase
+{
+    [HttpPost("receipts/process")]
+    public async Task<IActionResult> ProcessReceipt([FromBody] Receipt receipt)
+    {
+        // Generate a unique ID for the receipt
+        var receiptId = Guid.NewGuid().ToString();
+
+        // Calculate points
+        var points = PointsCalculator.CalculatePoints(receipt);
+
+        // Store receipt ID and points in memory
+        InMemoryDataStore.Receipts[receiptId] = points;
+
+        return Ok(new ProcessReceiptResponse { Id = receiptId });
+    }
+
+    [HttpGet("receipts/{id}/points")]
+    public async Task<IActionResult> GetPoints(string id)
+    {
+        // Retrieve points from in-memory store
+        if (InMemoryDataStore.Receipts.ContainsKey(id))
+        {
+            return Ok(new PointsResponse { Points = InMemoryDataStore.Receipts[id] });
+        }
+
+        return NotFound(new { Message = "Receipt not found" });
+    }
+}
