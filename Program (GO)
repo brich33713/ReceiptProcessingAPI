@@ -1,0 +1,168 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"math"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+// Receipt model
+type Receipt struct {
+	Retailer    string       `json:"retailer"`
+	PurchaseDate string      `json:"purchaseDate"`
+	PurchaseTime string      `json:"purchaseTime"`
+	Items       []ReceiptItem `json:"items"`
+	Total       string       `json:"total"`
+}
+
+// ReceiptItem model
+type ReceiptItem struct {
+	ShortDescription string `json:"shortDescription"`
+	Price            string `json:"price"`
+}
+
+// ProcessReceiptResponse model
+type ProcessReceiptResponse struct {
+	Id string `json:"id"`
+}
+
+// PointsResponse model
+type PointsResponse struct {
+	Points int `json:"points"`
+}
+
+// In-memory data store to hold receipts and points
+var receipts = make(map[string]int)
+
+// CalculatePoints function calculates points based on the given receipt
+func CalculatePoints(receipt Receipt) int {
+	points := 0
+
+	// 1 point for every alphanumeric character in the retailer name
+	points += countAlphanumeric(receipt.Retailer)
+
+	// 50 points if the total is a round dollar amount with no cents
+	totalAmount, err := parseAmount(receipt.Total)
+	if err == nil && totalAmount == math.Floor(totalAmount) {
+		points += 50
+	}
+
+	// 25 points if the total is a multiple of 0.25
+	if totalAmount == math.Round(totalAmount*4)/4 {
+		points += 25
+	}
+
+	// 5 points for every two items
+	points += (len(receipt.Items) / 2) * 5
+
+	// Item descriptions: If the trimmed length of the description is a multiple of 3, calculate points based on price
+	for _, item := range receipt.Items {
+		trimmedLength := len(strings.TrimSpace(item.ShortDescription))
+		if trimmedLength%3 == 0 {
+			price, err := parseAmount(item.Price)
+			if err == nil {
+				itemPoints := int(math.Ceil(price * 0.2))
+				points += itemPoints
+			}
+		}
+	}
+
+	// 5 points if the total is greater than 10.00
+	if totalAmount > 10.00 {
+		points += 5
+	}
+
+	// 6 points if the day in the purchase date is odd
+	purchaseDate, err := time.Parse("2006-01-02", receipt.PurchaseDate)
+	if err == nil && purchaseDate.Day()%2 != 0 {
+		points += 6
+	}
+
+	// 10 points if the time of purchase is between 2:00pm and 4:00pm
+	purchaseTime, err := time.Parse("15:04", receipt.PurchaseTime)
+	if err == nil {
+		if purchaseTime.Hour() >= 14 && purchaseTime.Hour() < 16 {
+			points += 10
+		}
+	}
+
+	return points
+}
+
+// Helper function to count alphanumeric characters
+func countAlphanumeric(str string) int {
+	count := 0
+	for _, char := range str {
+		if isAlphanumeric(char) {
+			count++
+		}
+	}
+	return count
+}
+
+// Helper function to check if a character is alphanumeric
+func isAlphanumeric(char rune) bool {
+	return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')
+}
+
+// Helper function to parse the price as a float64
+func parseAmount(amount string) (float64, error) {
+	return strconv.ParseFloat(amount, 64)
+}
+
+// ProcessReceipt handles the POST /receipts/process endpoint
+func ProcessReceipt(w http.ResponseWriter, r *http.Request) {
+	var receipt Receipt
+	if err := json.NewDecoder(r.Body).Decode(&receipt); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Generate a unique ID (in this case, we'll use a simple UUID format)
+	receiptID := fmt.Sprintf("%x", time.Now().UnixNano())
+
+	// Calculate points
+	points := CalculatePoints(receipt)
+
+	// Store the receipt ID and points
+	receipts[receiptID] = points
+
+	// Return the ID in the response
+	response := ProcessReceiptResponse{Id: receiptID}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// GetPoints handles the GET /receipts/{id}/points endpoint
+func GetPoints(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	receiptID := params["id"]
+
+	// Lookup points for the receipt ID
+	if points, found := receipts[receiptID]; found {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(PointsResponse{Points: points})
+	} else {
+		http.Error(w, "Receipt not found", http.StatusNotFound)
+	}
+}
+
+func main() {
+	r := mux.NewRouter()
+
+	// Define the routes
+	r.HandleFunc("/receipts/process", ProcessReceipt).Methods("POST")
+	r.HandleFunc("/receipts/{id}/points", GetPoints).Methods("GET")
+
+	// Start the server
+	log.Println("Server is starting on https://localhost:5001")
+	if err := http.ListenAndServeTLS(":5001", "server.crt", "server.key", r); err != nil {
+		log.Fatal(err)
+	}
+}
